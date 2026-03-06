@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GMM Background Subtraction — Stauffer &amp; Grimson 1999</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet" />
+<style>
+  /* ── reset & tokens ─────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #0a0a0f;
+    --surface: #111118;
+    --border:  #1e1e2e;
+    --accent:  #00ff9d;
+    --accent2: #ff3c6e;
+    --dim:     #3a3a5c;
+    --text:    #e0e0f0;
+    --muted:   #6b6b8a;
+    --mono:    'JetBrains Mono', monospace;
+    --sans:    'Syne', sans-serif;
+  }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── grid noise texture overlay ─────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      repeating-linear-gradient(0deg,   transparent, transparent 39px, var(--border) 39px, var(--border) 40px),
+      repeating-linear-gradient(90deg,  transparent, transparent 39px, var(--border) 39px, var(--border) 40px);
+    opacity: 0.18;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── layout ──────────────────────────────────────────────────── */
+  .page { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 0 24px 80px; }
+
+  /* ── header ──────────────────────────────────────────────────── */
+  header {
+    padding: 52px 0 36px;
+    border-bottom: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+
+  .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  h1 {
+    font-size: clamp(28px, 5vw, 52px);
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+  }
+
+  h1 span { color: var(--accent); }
+
+  .subtitle {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* ── status bar ──────────────────────────────────────────────── */
+  .statusbar {
+    display: flex; gap: 24px; align-items: center;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    flex-wrap: wrap;
+  }
+
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--dim);
+    display: inline-block; margin-right: 7px;
+    transition: background 0.3s;
+  }
+  .dot.live { background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: pulse 1.8s infinite; }
+  .dot.err  { background: var(--accent2); }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  #status-text { color: var(--text); }
+
+  /* ── start button ────────────────────────────────────────────── */
+  #start-btn {
+    margin: 40px auto 0;
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    padding: 16px 40px;
+    cursor: pointer;
+    transition: background .2s, color .2s, box-shadow .2s;
+    width: fit-content;
+  }
+
+  #start-btn:hover {
+    background: var(--accent);
+    color: var(--bg);
+    box-shadow: 0 0 28px rgba(0,255,157,.25);
+  }
+
+  #start-btn svg { width: 16px; height: 16px; }
+
+  /* ── panels grid ─────────────────────────────────────────────── */
+  .panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 28px;
+  }
+
+  @media (max-width: 640px) { .panels { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    position: relative;
+  }
+
+  .panel-label {
+    position: absolute; top: 10px; left: 12px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: rgba(10,10,15,.75);
+    padding: 3px 8px;
+    border: 1px solid var(--accent);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .panel canvas {
+    width: 100%;
+    display: block;
+    aspect-ratio: 4/3;
+    background: #000;
+  }
+
+  /* ── params panel ────────────────────────────────────────────── */
+  .params-section {
+    margin-top: 28px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .params-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  .params-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 0;
+  }
+
+  .param-item {
+    padding: 16px 20px;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .param-name {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .param-control {
+    display: flex; align-items: center; gap: 10px;
+  }
+
+  .param-control input[type=range] {
+    flex: 1;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .param-val {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    min-width: 40px;
+    text-align: right;
+  }
+
+  /* ── algo section ────────────────────────────────────────────── */
+  .algo-section {
+    margin-top: 28px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    padding: 28px;
+  }
+
+  .algo-section h2 {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 14px;
+  }
+
+  .algo-section p {
+    font-size: 14px;
+    line-height: 1.75;
+    color: #a0a0c0;
+    margin-bottom: 10px;
+  }
+
+  .algo-section code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    color: var(--accent);
+  }
+
+  /* ── footer ──────────────────────────────────────────────────── */
+  footer {
+    margin-top: 60px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  }
+
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── header ──────────────────────────────────────────────── -->
+  <header>
+    <div class="tag">Computer Vision · Background Subtraction</div>
+    <h1>GMM Background<br/><span>Subtraction</span></h1>
+    <div class="subtitle">Stauffer &amp; Grimson, 1999 · Adaptive Background Mixture Models · Live Demo</div>
+  </header>
+
+  <!-- ── status bar ──────────────────────────────────────────── -->
+  <div class="statusbar">
+    <div><span class="dot" id="dot"></span><span id="status-text">Camera not started</span></div>
+    <div>FPS&nbsp;<span id="fps-display" style="color:var(--text)">—</span></div>
+    <div>Frame&nbsp;<span id="frame-count" style="color:var(--text)">0</span></div>
+    <div>Resolution&nbsp;<span id="res-display" style="color:var(--text)">—</span></div>
+  </div>
+
+  <!-- ── start button ────────────────────────────────────────── -->
+  <div style="display:flex;justify-content:center">
+    <button id="start-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>
+      START CAMERA &amp; RUN GMM
+    </button>
+  </div>
+
+  <!-- ── 4 panels ────────────────────────────────────────────── -->
+  <div class="panels">
+    <div class="panel"><div class="panel-label">Original</div><canvas id="c-orig"></canvas></div>
+    <div class="panel"><div class="panel-label">FG Mask</div><canvas id="c-mask"></canvas></div>
+    <div class="panel"><div class="panel-label">Foreground</div><canvas id="c-fg"></canvas></div>
+    <div class="panel"><div class="panel-label">Background</div><canvas id="c-bg"></canvas></div>
+  </div>
+
+  <!-- ── live parameter controls ─────────────────────────────── -->
+  <div class="params-section">
+    <div class="params-header">Live Parameters — adjust while running</div>
+    <div class="params-grid">
+
+      <div class="param-item">
+        <div class="param-name">α — Learning Rate</div>
+        <div class="param-control">
+          <input type="range" id="p-alpha" min="0.005" max="0.1" step="0.005" value="0.03" />
+          <span class="param-val" id="v-alpha">0.03</span>
+        </div>
+      </div>
+
+      <div class="param-item">
+        <div class="param-name">K — Gaussians / Pixel</div>
+        <div class="param-control">
+          <input type="range" id="p-k" min="2" max="7" step="1" value="5" />
+          <span class="param-val" id="v-k">5</span>
+        </div>
+      </div>
+
+      <div class="param-item">
+        <div class="param-name">T — Match Threshold</div>
+        <div class="param-control">
+          <input type="range" id="p-thr" min="0.3" max="1.2" step="0.05" value="0.7" />
+          <span class="param-val" id="v-thr">0.70</span>
+        </div>
+      </div>
+
+      <div class="param-item">
+        <div class="param-name">B — BG Ratio</div>
+        <div class="param-control">
+          <input type="range" id="p-bg" min="0.3" max="0.95" step="0.05" value="0.7" />
+          <span class="param-val" id="v-bg">0.70</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── algorithm explainer ─────────────────────────────────── -->
+  <div class="algo-section">
+    <h2>How It Works</h2>
+    <p>
+      Each pixel is modelled as a mixture of <code>K</code> Gaussians. Every frame,
+      the algorithm checks whether the current pixel value matches any existing component
+      (within <code>T</code> standard deviations). Matched components update their
+      mean, variance, and weight using learning rate <code>α</code>.
+    </p>
+    <p>
+      Components are ranked by <code>ω/√σ²</code> — high weight, low variance means
+      a stable background. The top components whose weights sum to <code>B</code>
+      form the background model. Pixels that don't match any background component
+      are classified as <strong>foreground</strong>.
+    </p>
+    <p>
+      When no component matches a pixel, the weakest component is replaced with a new
+      Gaussian centred on the current value — allowing the model to adapt to
+      entirely new background regions.
+    </p>
+  </div>
+
+  <footer>
+    <div>Stauffer, C. &amp; Grimson, W.E.L. (1999). Adaptive background mixture models for real-time tracking. <em>CVPR</em>.</div>
+    <div>Built by <span style="color:var(--text)">Rahul Bishnoi</span> · IIT Delhi</div>
+    <div><a href="https://github.com" target="_blank">View Source on GitHub</a></div>
+  </footer>
+
+</div><!-- /page -->
+
+<!-- hidden video element for webcam feed -->
+<video id="vid" autoplay playsinline muted style="display:none"></video>
+
+<script>
+"use strict";
+
+// ═══════════════════════════════════════════════════════════════
+//  GMM PARAMETERS  — mirrors the Python version exactly
+//  All of these are live-editable via the sliders above
+// ═══════════════════════════════════════════════════════════════
+
+const P = {
+  K:        5,       // number of Gaussian components per pixel
+  ALPHA:    0.03,    // learning rate α
+  INIT_VAR: 100.0,   // variance for a newly spawned component
+  MIN_VAR:  50.0,    // variance floor (numerical stability)
+  MATCH_THR:0.7,     // Mahalanobis threshold T
+  BG_RATIO: 0.7,     // cumulative weight B for background decision
+  SCALE:    0.35,    // resolution scale — lower = faster
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  GMM STATE  — one big Float32Array per parameter
+//  Layout: pixel-major → [pixel0_k0, pixel0_k1, ... pixel0_kK-1,
+//                          pixel1_k0, ...]
+//  We keep flat typed arrays instead of nested JS arrays so that
+//  reading/writing is as fast as possible in the browser.
+// ═══════════════════════════════════════════════════════════════
+
+let W, H;                    // frame dimensions (after scaling)
+let gmmW, gmmMu, gmmVar;    // weights (N*K), means (N*K*3), variances (N*K)
+let gmmReady = false;
+let frameCount = 0;
+
+function initGMM(w, h) {
+  W = w; H = h;
+  const N = W * H;            // total pixels
+
+  // weights[n*K + k]          — one scalar per component
+  gmmW   = new Float32Array(N * P.K);
+  // means[n*K*3 + k*3 + c]   — RGB mean per component
+  gmmMu  = new Float32Array(N * P.K * 3);
+  // var[n*K + k]              — one variance per component
+  gmmVar = new Float32Array(N * P.K).fill(P.INIT_VAR);
+
+  // seed: component-0 gets all the weight, rest dormant
+  for (let n = 0; n < N; n++) gmmW[n * P.K + 0] = 1.0;
+
+  gmmReady = false;           // needs one frame to seed means
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PROCESS ONE FRAME
+//  img  : Uint8ClampedArray from getImageData (RGBA, length W*H*4)
+//  Returns { fgMask, bgRgba, fgRgba } for display
+// ═══════════════════════════════════════════════════════════════
+
+function processFrame(img) {
+  const N = W * H;
+  const K = P.K;
+
+  // output buffers (RGBA for easy putImageData)
+  const bgRgba = new Uint8ClampedArray(N * 4);
+  const fgRgba = new Uint8ClampedArray(N * 4);
+  const mkRgba = new Uint8ClampedArray(N * 4);  // binary mask
+
+  // ── seed means on first real frame ──────────────────────────
+  if (!gmmReady) {
+    for (let n = 0; n < N; n++) {
+      const si = n * 4;
+      const mi = n * K * 3;
+      gmmMu[mi]   = img[si];
+      gmmMu[mi+1] = img[si+1];
+      gmmMu[mi+2] = img[si+2];
+    }
+    gmmReady = true;
+    return null;
+  }
+
+  // ── per-pixel loop ───────────────────────────────────────────
+  // NOTE: We loop per-pixel in JS. Unlike Python, JS typed arrays
+  // are fast at sequential access — this runs comfortably in real time
+  // at SCALE=0.35 (roughly 224×168 pixels = ~37 000 pixels).
+
+  for (let n = 0; n < N; n++) {
+    const si  = n * 4;         // source RGBA offset
+    const ki  = n * K;         // weight/var offset
+    const mi  = n * K * 3;     // mean offset
+
+    // current pixel RGB as floats
+    const pr = img[si];
+    const pg = img[si+1];
+    const pb = img[si+2];
+
+    // ── 1. MATCHING ─────────────────────────────────────────────
+    // For each component: compute squared distance, compare to threshold
+    let anyMatch = false;
+    const matched = new Uint8Array(K);  // 1 if this component matched
+
+    for (let k = 0; k < K; k++) {
+      const mOff  = mi + k * 3;
+      const dr    = pr - gmmMu[mOff];
+      const dg    = pg - gmmMu[mOff+1];
+      const db    = pb - gmmMu[mOff+2];
+      const dist2 = dr*dr + dg*dg + db*db;
+      const lim   = P.MATCH_THR * P.MATCH_THR * gmmVar[ki + k];
+
+      if (dist2 <= lim) {
+        matched[k] = 1;
+        anyMatch   = true;
+      }
+    }
+
+    // ── 2. UPDATE WEIGHTS, MEANS, VARIANCES ─────────────────────
+    // Eq.(4) Stauffer & Grimson:
+    //   ω_k ← (1-α)·ω_k + α·match_k
+    //   μ_k ← (1-α)·μ_k + α·x          (matched only)
+    //   σ²_k← (1-α)·σ²_k+ α·||x-μ_k||² (matched only)
+    let wSum = 0;
+
+    for (let k = 0; k < K; k++) {
+      const wi   = ki + k;
+      const mOff = mi + k * 3;
+
+      gmmW[wi] = (1 - P.ALPHA) * gmmW[wi] + (matched[k] ? P.ALPHA : 0);
+
+      if (matched[k]) {
+        gmmMu[mOff]   = (1 - P.ALPHA) * gmmMu[mOff]   + P.ALPHA * pr;
+        gmmMu[mOff+1] = (1 - P.ALPHA) * gmmMu[mOff+1] + P.ALPHA * pg;
+        gmmMu[mOff+2] = (1 - P.ALPHA) * gmmMu[mOff+2] + P.ALPHA * pb;
+
+        const dr2 = pr - gmmMu[mOff];
+        const dg2 = pg - gmmMu[mOff+1];
+        const db2 = pb - gmmMu[mOff+2];
+
+        gmmVar[wi] = (1 - P.ALPHA) * gmmVar[wi] + P.ALPHA * (dr2*dr2 + dg2*dg2 + db2*db2);
+      }
+
+      // enforce variance floor
+      if (gmmVar[wi] < P.MIN_VAR) gmmVar[wi] = P.MIN_VAR;
+      wSum += gmmW[wi];
+    }
+
+    // ── 3. RE-NORMALISE WEIGHTS ──────────────────────────────────
+    for (let k = 0; k < K; k++) gmmW[ki + k] /= wSum;
+
+    // ── 4. REPLACE WEAKEST COMPONENT IF NO MATCH ────────────────
+    if (!anyMatch) {
+      let minW = Infinity, minK = 0;
+      for (let k = 0; k < K; k++) {
+        if (gmmW[ki + k] < minW) { minW = gmmW[ki + k]; minK = k; }
+      }
+      const mOff        = mi + minK * 3;
+      gmmMu[mOff]       = pr;
+      gmmMu[mOff+1]     = pg;
+      gmmMu[mOff+2]     = pb;
+      gmmVar[ki + minK] = P.INIT_VAR;
+      gmmW[ki  + minK]  = 0.05;
+    }
+
+    // ── 5. BG / FG DECISION ─────────────────────────────────────
+    // Sort components by ω/√σ² (best-to-worst)
+    // Accumulate until BG_RATIO is reached → those are BG components
+    // Pixel is BG if it matches any selected BG component
+
+    // build a tiny sort index (K is small, insertion sort is fine)
+    const idx = Array.from({length: K}, (_, i) => i);
+    idx.sort((a, b) =>
+      (gmmW[ki+b] / Math.sqrt(gmmVar[ki+b])) -
+      (gmmW[ki+a] / Math.sqrt(gmmVar[ki+a]))
+    );
+
+    let cumW    = 0;
+    let isBg    = false;
+    let bgR = 0, bgG = 0, bgB = 0, bgWsum = 0;  // for bg reconstruction
+
+    for (let r = 0; r < K; r++) {
+      const k    = idx[r];
+      const mOff = mi + k * 3;
+      const w_k  = gmmW[ki + k];
+
+      // check if this component is in the BG model
+      const inBg = cumW < P.BG_RATIO;
+
+      if (inBg) {
+        // accumulate weighted mean for BG image reconstruction
+        bgR += w_k * gmmMu[mOff];
+        bgG += w_k * gmmMu[mOff+1];
+        bgB += w_k * gmmMu[mOff+2];
+        bgWsum += w_k;
+
+        // BG match check
+        if (!isBg) {
+          const dr    = pr - gmmMu[mOff];
+          const dg    = pg - gmmMu[mOff+1];
+          const db    = pb - gmmMu[mOff+2];
+          const dist2 = dr*dr + dg*dg + db*db;
+          if (dist2 <= P.MATCH_THR * P.MATCH_THR * gmmVar[ki + k]) {
+            isBg = true;
+          }
+        }
+      }
+
+      cumW += w_k;
+    }
+
+    // ── 6. WRITE OUTPUT PIXELS ───────────────────────────────────
+
+    // background image: weighted blend of BG components
+    const s = bgWsum > 0 ? 1 / bgWsum : 0;
+    bgRgba[si]   = bgR * s;
+    bgRgba[si+1] = bgG * s;
+    bgRgba[si+2] = bgB * s;
+    bgRgba[si+3] = 255;
+
+    // foreground: original colour if fg, else black
+    if (!isBg) {
+      fgRgba[si]   = pr;
+      fgRgba[si+1] = pg;
+      fgRgba[si+2] = pb;
+      fgRgba[si+3] = 255;
+
+      mkRgba[si] = mkRgba[si+1] = mkRgba[si+2] = 255;
+      mkRgba[si+3] = 255;
+    } else {
+      fgRgba[si+3] = bgRgba[si+3];   // alpha=255, RGB stays 0
+      mkRgba[si+3] = 255;             // black mask pixel
+    }
+  }
+
+  return { bgRgba, fgRgba, mkRgba };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CANVAS + WEBCAM PLUMBING
+// ═══════════════════════════════════════════════════════════════
+
+const vid         = document.getElementById('vid');
+const cOrig       = document.getElementById('c-orig');
+const cMask       = document.getElementById('c-mask');
+const cFg         = document.getElementById('c-fg');
+const cBg         = document.getElementById('c-bg');
+const dot         = document.getElementById('dot');
+const statusText  = document.getElementById('status-text');
+const fpsDisplay  = document.getElementById('fps-display');
+const frameDisp   = document.getElementById('frame-count');
+const resDisp     = document.getElementById('res-display');
+const startBtn    = document.getElementById('start-btn');
+
+// off-screen canvas used to grab raw pixels from the webcam
+const offscreen   = document.createElement('canvas');
+const offCtx      = offscreen.getContext('2d', { willReadFrequently: true });
+
+// output canvas contexts
+const ctxOrig = cOrig.getContext('2d');
+const ctxMask = cMask.getContext('2d');
+const ctxFg   = cFg.getContext('2d');
+const ctxBg   = cBg.getContext('2d');
+
+let running = false;
+let lastTime = 0;
+let fpsSmooth = 0;
+
+function setStatus(msg, state) {
+  statusText.textContent = msg;
+  dot.className = 'dot ' + (state || '');
+}
+
+// ── parameter slider wiring ──────────────────────────────────
+function wireSlider(id, valId, paramKey, decimals) {
+  const slider = document.getElementById(id);
+  const label  = document.getElementById(valId);
+  slider.addEventListener('input', () => {
+    const v = parseFloat(slider.value);
+    P[paramKey] = v;
+    label.textContent = v.toFixed(decimals);
+    // if K changed we need to re-init the GMM arrays
+    if (paramKey === 'K') reinitGMM();
+  });
+}
+
+wireSlider('p-alpha', 'v-alpha', 'ALPHA',    3);
+wireSlider('p-k',     'v-k',     'K',        0);
+wireSlider('p-thr',   'v-thr',   'MATCH_THR',2);
+wireSlider('p-bg',    'v-bg',    'BG_RATIO', 2);
+
+function reinitGMM() {
+  if (W && H) initGMM(W, H);
+}
+
+// ── main render loop ─────────────────────────────────────────
+function renderLoop(now) {
+  if (!running) return;
+  requestAnimationFrame(renderLoop);
+
+  // FPS calculation
+  const dt = now - lastTime;
+  lastTime = now;
+  fpsSmooth = fpsSmooth * 0.9 + (1000 / dt) * 0.1;
+  fpsDisplay.textContent = fpsSmooth.toFixed(1);
+
+  // grab current webcam frame into the offscreen canvas
+  offCtx.drawImage(vid, 0, 0, W, H);
+  const imgData = offCtx.getImageData(0, 0, W, H);
+
+  // draw original panel
+  cOrig.width  = W; cOrig.height  = H;
+  ctxOrig.putImageData(imgData, 0, 0);
+
+  // run GMM
+  const result = processFrame(imgData.data);
+  if (!result) return;
+
+  const { bgRgba, fgRgba, mkRgba } = result;
+
+  // draw remaining panels
+  cMask.width = W; cMask.height = H;
+  ctxMask.putImageData(new ImageData(mkRgba, W, H), 0, 0);
+
+  cFg.width = W; cFg.height = H;
+  ctxFg.putImageData(new ImageData(fgRgba, W, H), 0, 0);
+
+  cBg.width = W; cBg.height = H;
+  ctxBg.putImageData(new ImageData(bgRgba, W, H), 0, 0);
+
+  frameCount++;
+  frameDisp.textContent = frameCount;
+}
+
+// ── start button ─────────────────────────────────────────────
+startBtn.addEventListener('click', async () => {
+  if (running) return;
+
+  setStatus('Requesting camera access…', '');
+  startBtn.disabled = true;
+  startBtn.textContent = 'STARTING…';
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+      audio: false
+    });
+    vid.srcObject = stream;
+
+    vid.onloadedmetadata = () => {
+      vid.play();
+
+      // compute scaled dimensions
+      W = Math.round(vid.videoWidth  * P.SCALE);
+      H = Math.round(vid.videoHeight * P.SCALE);
+
+      offscreen.width  = W;
+      offscreen.height = H;
+
+      resDisp.textContent = `${W}×${H}`;
+
+      initGMM(W, H);
+
+      running = true;
+      lastTime = performance.now();
+      requestAnimationFrame(renderLoop);
+
+      setStatus('Running — Stauffer-Grimson GMM live', 'live');
+      startBtn.style.display = 'none';
+    };
+
+  } catch (err) {
+    setStatus('Camera access denied or unavailable', 'err');
+    startBtn.disabled = false;
+    startBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg> START CAMERA &amp; RUN GMM`;
+    console.error(err);
+  }
+});
+</script>
+</body>
+</html>
