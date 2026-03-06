@@ -2,7 +2,7 @@
 
 A real-time, in-browser implementation of the **Stauffer & Grimson (1999)** background subtraction algorithm, running entirely on your device using your own camera.
 
-🔗 **[Try the live demo →](https://yourusername.github.io/gmm-demo)**
+🔗 **[Try the live demo →](https://rahulbishnoi0014.github.io/gmm_by_rahul/)**
 
 ---
 
@@ -59,7 +59,7 @@ All four parameters are adjustable live via sliders while the demo is running.
 Just open `index.html` in any modern browser. No build step, no dependencies, no install.
 
 ```bash
-git clone https://github.com/yourusername/gmm-demo
+git clone https://github.com/Rahulbishnoi0014/gmm_by_rahul
 cd gmm-demo
 open index.html        # macOS
 # or just drag index.html into your browser
